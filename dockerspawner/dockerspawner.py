@@ -15,6 +15,7 @@ from tornado import gen
 
 from escapism import escape
 from jupyterhub.spawner import Spawner
+from jupyterhub.utils import random_port
 from traitlets import (
     Dict,
     Unicode,
@@ -267,6 +268,7 @@ class DockerSpawner(Spawner):
         env = super(DockerSpawner, self).get_env()
         env.update(dict(
             JPY_USER=self.user.name,
+            JPY_PORT=self.user.server.port,
             JPY_COOKIE_NAME=self.user.server.cookie_name,
             JPY_BASE_URL=self.user.server.base_url,
             JPY_HUB_PREFIX=self.hub.server.base_url
@@ -363,6 +365,11 @@ class DockerSpawner(Spawner):
         if container is None:
             image = image or self.container_image
 
+            # If network_mode is set to 'host', dictate the port for the
+            # notebook server to the container
+            if self.network_name == 'host':
+                self.user.server.port = random_port()
+
             # build the dictionary of keyword arguments for create_container
             create_kwargs = dict(
                 image=image,
@@ -415,9 +422,10 @@ class DockerSpawner(Spawner):
         # start the container
         yield self.docker('start', self.container_id, **start_kwargs)
 
-        ip, port = yield from self.get_ip_and_port()
-        self.user.server.ip = ip
-        self.user.server.port = port
+        if self.network_name != 'host':
+            ip, port = yield from self.get_ip_and_port()
+            self.user.server.ip = ip
+            self.user.server.port = port
 
     def get_ip_and_port(self):
         if self.use_internal_ip:
@@ -427,7 +435,7 @@ class DockerSpawner(Spawner):
                 ip = self.get_network_ip(network_settings)
             else:  # Fallback for old versions of docker (<1.9) without network management
                 ip = network_settings['IPAddress']
-            port = 8888
+            port = self.get_network_port()
         else:
             resp = yield self.docker('port', self.container_id, 8888)
             if resp is None:
